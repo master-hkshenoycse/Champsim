@@ -76,7 +76,7 @@
         "rq_size": 32,
         "wq_size": 32,
         "pq_size": 16,
-        "mshr_size": 64,
+        "mshr_size": 32,
         "latency": 10,
         "max_read": 1,
         "max_write": 1,
@@ -144,10 +144,10 @@
         "frequency": 4000,
         "sets": 2048,
         "ways": 16,
-        "rq_size": 64,
-        "wq_size": 64,
-        "pq_size": 64,
-        "mshr_size": 256,
+        "rq_size": 32,
+        "wq_size": 32,
+        "pq_size": 32,
+        "mshr_size": 64,
         "latency": 20,
         "max_read": 1,
         "max_write": 1,
@@ -155,7 +155,7 @@
         "virtual_prefetch": false,
         "prefetch_activate": "LOAD,PREFETCH",
         "prefetcher": "no",
-        "replacement": "lru"
+        "replacement": "ship"
     },
 
     "physical_memory": {

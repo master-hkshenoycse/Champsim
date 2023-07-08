@@ -32,14 +32,25 @@ extern VirtualMemory vmem;
 extern uint8_t warmup_complete[NUM_CPUS];
 extern std::array<CACHE*, NUM_CACHES> caches;
 
-#define CHECK_ADDRESS 2207790792
+//#define CHECK_ADDRESS 7896855332
+//#define CHECK_ADDRESS 3262463704
+#define CHECK_ADDRESS -1
+//#define CHECK_ADDRESS 2207790808
+//#define CHECK_ADDRESS 2552814384
 
 
-void print_cache( CACHE *c){
+void print_cache( CACHE *c,uint64_t address){
   
-  for(auto b:c->block){
-    cout<<b.address<<" "<<b.valid<<endl;
+  int set=c->get_set(address);
+  int st=set*(c->NUM_WAY);
+  int en=st+c->NUM_WAY;
+
+  cout<<set<<" "<<st<<" "<<en<<endl;
+
+  for(int i=st;i<en;i++){
+    cout<<c->block[i].address<<" "<<c->block[i].valid<<" "<<c->block[i].dirty<<endl;
   }
+  
 }
 
 //@Hari to check the names of cache 
@@ -59,6 +70,7 @@ void assert_inclusivity(string NAME,uint32_t cpu,uint64_t address){
   bool is_L1D=check_string(NAME,"L1D");
   bool is_L2C=check_string(NAME,"L2C");
 
+  
   if(is_L1D){
 
 
@@ -77,7 +89,7 @@ void assert_inclusivity(string NAME,uint32_t cpu,uint64_t address){
          uint32_t way=it->get_way(address,set);
          if(way==it->NUM_WAY or it->block[set*(it->NUM_WAY)+way].valid==0){
           cout<<"Address: "<<address<<" "<<way<<" "<<it->block[set*(it->NUM_WAY)+way].valid<<" "<<NAME<<" "<<(it->NAME)<<endl;
-          print_cache(it);
+          //print_cache(it);
           assert(0);
          }
        }
@@ -92,6 +104,7 @@ void assert_inclusivity(string NAME,uint32_t cpu,uint64_t address){
          uint32_t way=it->get_way(address,set);
          if(way==it->NUM_WAY or it->block[set*(it->NUM_WAY)+way].valid==0){
           cout<<"Address: "<<address<<" "<<way<<" "<<it->block[set*(it->NUM_WAY)+way].valid<<" "<<NAME<<" "<<(it->NAME)<<endl;
+          print_cache(it,address);
           assert(0);
          }
        }
@@ -140,16 +153,16 @@ bool inWQ(CACHE *cache,uint64_t address){
 }
 
 //@Hari to check if evcition of a block does not viiolate inclusivity
-bool make_inclusive(CACHE *cache,uint64_t address,uint64_t instr_id){
+int make_inclusive(CACHE *cache,uint64_t address,uint64_t instr_id,CACHE *wq_cache,bool check_dirty){
 
 
-  if(inMSHR(cache,address)){
+  /*if(inMSHR(cache,address)){
     return 0;
-  }
+  }*/
 
-  if(check_string(cache->NAME,"L2C") and inWQ(cache,address)){
+  /*if(inWQ(cache,address)){
     return 0;
-  }
+  }*/
 
   uint32_t set=cache->get_set(address);
   uint32_t way=cache->get_way(address,set);
@@ -162,10 +175,12 @@ bool make_inclusive(CACHE *cache,uint64_t address,uint64_t instr_id){
     return 1;
   }
 
+  int in_write=0;
 
-  if(cache->block[set*(cache->NUM_WAY)+way].dirty){
+  if(cache->block[set*(cache->NUM_WAY)+way].dirty and check_dirty){
+
       PACKET writeback_packet;
-	  writeback_packet.fill_level = cache->lower_level->fill_level;
+	    writeback_packet.fill_level = wq_cache->lower_level->fill_level;
       writeback_packet.cpu = cache->cpu;
       writeback_packet.address = address;
       writeback_packet.data = cache->block[set*(cache->NUM_WAY)+way].data;
@@ -173,75 +188,87 @@ bool make_inclusive(CACHE *cache,uint64_t address,uint64_t instr_id){
       writeback_packet.ip = 0;
       writeback_packet.type = WRITEBACK;
 
-      auto result = cache->lower_level->add_wq(&writeback_packet);
+      auto result = wq_cache->lower_level->add_wq(&writeback_packet);
+
       if (result == -2){
         return 0;
       }
+
+      in_write=1;
       
   }
 
 
 
   cache->block[set*(cache->NUM_WAY)+way].valid=0;
-  return 1;
+  cache->block[set*(cache->NUM_WAY)+way].dirty=0;
+
+  if(CHECK_ADDRESS==address){
+    cout<<"Invalidated from "<<(cache->NAME)<<" "<<instr_id<<" "<<set<<" "<<way<<" "<<__func__<<endl;
+  }
+
+  return 1+in_write;
 
 
 }
 
 
 //@Hari to check if eviction is possible
-bool check_inclusive(string NAME,uint64_t victim_address,uint64_t instr_id,uint32_t cpu){
+int check_inclusive(string NAME,uint64_t victim_address,uint64_t instr_id,uint32_t cpu,CACHE *wq_cache){
 	
 		
 		//@Hari checking the level of current cache hierarchy
 		bool is_LLC=check_string(NAME,"LLC");
 		bool is_L2C=check_string(NAME,"L2C");
+    bool is_L1D=check_string(NAME,"L1D");
+
+    CACHE *L2C,*L1D;
+
+    for(auto it:caches){
+
+      if(check_string(it->NAME,"L1D") and it->cpu==cpu){
+        L1D=it;
+      }
+
+      if(check_string(it->NAME,"L2C") and it->cpu==cpu){
+        L2C=it;
+      }
+
+    }
+
         
 
     //@Hari checking eviction in higher levels
     if(is_LLC){
-      for(auto cache:caches){
-        
 
-        if(check_string(cache->NAME,"L1D") and cache->cpu==cpu){
-          if(make_inclusive(cache,victim_address,instr_id)==0){
-            return 0;
-          }
-        }
+      int res=make_inclusive(L1D,victim_address,instr_id,wq_cache,1);
 
-        if(check_string(cache->NAME,"L1I") and cache->cpu==cpu){
-          if(make_inclusive(cache,victim_address,instr_id)==0){
-            return 0;
-          }
-        }
-
-        if(check_string(cache->NAME,"L2C") and cache->cpu==cpu){
-          if(make_inclusive(cache,victim_address,instr_id)==0){
-            return 0;
-          }
-        }
+      if(res==0){
+        return 0;
       }
+
+      int check=make_inclusive(L2C,victim_address,instr_id,wq_cache,res!=2);
+      
+      if(check==0){
+        return 0;
+      }
+
+      if(res==2){
+        check=2;
+      }
+
+      return check;
     }
 
-    if(is_L2C){
-      for(auto cache:caches){
-        
-        if(check_string(cache->NAME,"L1D") and cache->cpu==cpu){
-          if(make_inclusive(cache,victim_address,instr_id)==0){
-            return 0;
-          }
-        }
 
-        if(check_string(cache->NAME,"L1I") and cache->cpu==cpu){
-          if(make_inclusive(cache,victim_address,instr_id)==0){
-            return 0;
-          }
-        }
-      }
+    if(is_L2C or is_L1D){
+      int check=make_inclusive(L1D,victim_address,instr_id,wq_cache,1);
+      return check;
     }
-		
-		return 1;
-		
+
+    return 1;
+  
+			
 }
 void CACHE::handle_fill()
 {
@@ -268,30 +295,53 @@ void CACHE::handle_fill()
     //@Hari finding victim address for eviction
     uint64_t victim_address=block[set*NUM_WAY+way].address;
 
-    bool success = filllike_miss(set, way, *fill_mshr);
-
-    //@Hari check the values
-    if(victim_address==CHECK_ADDRESS){
-        cout<<"Evicted from :"<<NAME<<" "<<fill_mshr->instr_id<<endl;
-    }
-
-    if (!success)
-      return;
-
+    
+    int possible=1;
 
 
     if(MAKE_INCLUSIVE){
       //@Hari check if evicting this address does not violate inclusivity
-		  bool possible=check_inclusive(NAME,victim_address,fill_mshr->instr_id,cpu);		
+      
+      CACHE *wq_cache;
+
+
+      for(auto it:caches){
+        if(it->NAME=="LLC"){
+          wq_cache=it;
+          break;
+        }
+      }
+
+
+		  possible=check_inclusive(NAME,victim_address,fill_mshr->instr_id,cpu,wq_cache);		
       if(possible==0){
         return ;
       }
+
+      if(possible==2){
+        block[set*NUM_WAY+way].dirty=0;
+      }
+
     }
 
+
+    bool success = filllike_miss(set, way, *fill_mshr);
+
     
+
+
+    if (!success)
+      return;
+
+        
     //@Hari check the values
     if(fill_mshr->address==CHECK_ADDRESS){
-       cout<<"Inserted into :"<<NAME<<" "<<fill_mshr->instr_id<<" "<<victim_address<<endl;
+       cout<<"Inserted into :"<<NAME<<" "<<fill_mshr->instr_id<<" "<<way<<" "<<__func__<<endl;
+    }
+
+    //@Hari check the values
+    if(victim_address==CHECK_ADDRESS){
+        cout<<"Evicted from :"<<NAME<<" "<<fill_mshr->instr_id<<" "<<success<<" "<<way<<" "<<__func__<<endl;
     }
 
     if (way != NUM_WAY) {
@@ -323,7 +373,9 @@ void CACHE::handle_writeback()
     uint32_t set = get_set(handle_pkt.address);
     uint32_t way = get_way(handle_pkt.address, set);
 
+     
     bool is_hit=(way<NUM_WAY);
+
     if(MAKE_INCLUSIVE){
       if(is_hit && block[set*NUM_WAY+way].valid==1){
         is_hit=1;
@@ -333,10 +385,24 @@ void CACHE::handle_writeback()
     }
 
     BLOCK& fill_block = block[set * NUM_WAY + way];
+    
+    
+    if(handle_pkt.address==CHECK_ADDRESS){
+      cout<<"Address in WQ of "<<NAME<<" "<<handle_pkt.instr_id<<endl;
+
+    }
+
+
 
     if (is_hit) // HIT
-    {
+    { 
+
+
       impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
+
+      if(handle_pkt.address==CHECK_ADDRESS){
+        cout<<"Address present in  "<<NAME<<" "<<handle_pkt.instr_id<<" "<<set<<" "<<way<<" "<<__func__<<endl;
+      }
 
       // COLLECT STATS
       sim_hit[handle_pkt.cpu][handle_pkt.type]++;
@@ -344,13 +410,18 @@ void CACHE::handle_writeback()
 
       // mark dirty
       fill_block.dirty = 1;
+
+      
     } else // MISS
     {
       bool success;
       if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
         success = readlike_miss(handle_pkt);
       } else {
+
         // find victim
+
+        
         auto set_begin = std::next(std::begin(block), set * NUM_WAY);
         auto set_end = std::next(set_begin, NUM_WAY);
         auto first_inv = std::find_if_not(set_begin, set_end, is_valid<BLOCK>());
@@ -361,24 +432,50 @@ void CACHE::handle_writeback()
 
       //@Hari finding victim address for eviction
       uint64_t victim_address=block[set*NUM_WAY+way].address;
-
+      
+      int possible=1;
+      
       if(MAKE_INCLUSIVE){
+
         //@Hari check if evicting this address does not violate inclusivity
-        bool possible=check_inclusive(NAME,victim_address,handle_pkt.instr_id,cpu);		
+        CACHE *wq_cache;
+
+        for(auto it:caches){
+          if(it->NAME==NAME){
+            wq_cache=it;
+            break;
+          }
+        }
+
+        possible=check_inclusive(NAME,victim_address,handle_pkt.instr_id,cpu,wq_cache);		
+        
         if(possible==0){
           return ;
         }
+
       }
 
 
+      if(possible==2){
+        block[set*NUM_WAY+way].dirty=0;
+      }
+
       success = filllike_miss(set, way, handle_pkt);
-        
-        //@Hari check the values
-        if(victim_address==CHECK_ADDRESS){
-            cout<<"Evicted from :"<<NAME<<" "<<handle_pkt.instr_id<<endl;
-        }
-        if (!success)
-          return;
+
+      
+      if (!success)
+        return;
+
+      //@Hari check the values
+      if(handle_pkt.address == CHECK_ADDRESS){
+        cout<<"Inserted into :"<<NAME<<" "<<handle_pkt.instr_id<<" "<<way<<" "<<__func__<<endl;
+      }
+
+      //@Hari check the values
+      if(victim_address == CHECK_ADDRESS){
+          cout<<"Evicted from :"<<NAME<<" "<<handle_pkt.instr_id<<" "<<possible<<" "<<__func__<<endl;
+      }
+
 
     }
 
@@ -413,42 +510,46 @@ void CACHE::handle_read()
     bool is_hit=(way<NUM_WAY);
 
     if(MAKE_INCLUSIVE){
-        if(way<NUM_WAY and block[set*NUM_WAY+way].valid){
+        if(way<NUM_WAY && block[set*NUM_WAY+way].valid==1){
             is_hit=1;
         }else{
             is_hit=0;
         }
     }
 
-    if(NAME=="LLC" and handle_pkt.address==CHECK_ADDRESS){
-      cout<<"Address in RQ of LLC"<<endl;
+    if(handle_pkt.address==CHECK_ADDRESS){
+      cout<<"Address in RQ of "<<NAME<<" "<<handle_pkt.instr_id<<endl;
     }
     
     if (is_hit) // HIT
     { 
       
-      if(NAME=="LLC" and handle_pkt.address==CHECK_ADDRESS){
-        cout<<"Address is present in LLC"<<endl;
+      if(handle_pkt.address==CHECK_ADDRESS){
+        cout<<"Address is present in "<<NAME<<" "<<handle_pkt.instr_id<<" "<<set<<" "<<way<<" "<<__func__<<endl;
       }
 
 
       if(MAKE_INCLUSIVE and warmup_complete[handle_pkt.cpu]){
         assert_inclusivity(NAME,cpu,handle_pkt.address);
       }
+
       readlike_hit(set, way, handle_pkt);
+
+
+      
 
     } else {
 
-      if(NAME=="LLC" and handle_pkt.address==CHECK_ADDRESS){
-        cout<<"Address not present in LLC"<<endl;
+      if(handle_pkt.address==CHECK_ADDRESS){
+        cout<<"Address not present in "<<NAME<<" "<<handle_pkt.instr_id<<" "<<__func__<<endl;
       }
 
       bool success = readlike_miss(handle_pkt);
       if (!success)
         return;
 
-      if(NAME=="LLC" and handle_pkt.address==CHECK_ADDRESS){
-        cout<<"Address miss handled in LLC"<<endl;
+      if(handle_pkt.address==CHECK_ADDRESS){
+        cout<<"Address miss handled in "<<NAME<<" "<<handle_pkt.instr_id<<" "<<__func__<<endl;
       }
 
     }
@@ -470,10 +571,14 @@ void CACHE::handle_prefetch()
 
     uint32_t set = get_set(handle_pkt.address);
     uint32_t way = get_way(handle_pkt.address, set);
+    
+    
+
 
     if (way < NUM_WAY) // HIT
     {
       readlike_hit(set, way, handle_pkt);
+
     } else {
       bool success = readlike_miss(handle_pkt);
       if (!success)
@@ -720,6 +825,17 @@ uint32_t CACHE::get_way(uint64_t address, uint32_t set)
 {
   auto begin = std::next(block.begin(), set * NUM_WAY);
   auto end = std::next(begin, NUM_WAY);
+
+  /*uint32_t st=set*NUM_WAY;
+  uint32_t en=set*NUM_WAY+NUM_WAY;
+
+  for(uint32_t i=st;i<en;i++){
+    if(block[i].address==address){
+      return i-st;
+    }
+  }
+
+  return NUM_WAY;*/
   return std::distance(begin, std::find_if(begin, end, eq_addr<BLOCK>(address, OFFSET_BITS)));
 }
 

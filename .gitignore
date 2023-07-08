@@ -4,6 +4,7 @@ inc/ooo_cpu_modules.inc
 src/core_inst.cc
 gap/
 logs/
+gap_pr/
 
 cache_modified.cc 
 logs_collated_results.csv
@@ -14,6 +15,11 @@ extract_logs.py
 
 run_me.sh
 run_test.sh
+run_me_pr.sh
+
+testing_log_bc0
+testing_log_sssp10
+testing_log_sssp14
 
 .champsimconfig_cache
 ./Makefile
