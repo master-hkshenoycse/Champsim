@@ -37,8 +37,9 @@ extern std::array<CACHE*, NUM_CACHES> caches;
 #define CHECK_ADDRESS -1
 //#define CHECK_ADDRESS 2207790808
 //#define CHECK_ADDRESS 2552814384
-
-
+//#define CHECK_ADDRESS 6188511164
+//#define CHECK_ADDRESS 2928288180
+//#define CHECK_ADDRESS 1323003448
 void print_cache( CACHE *c,uint64_t address){
   
   int set=c->get_set(address);
@@ -111,10 +112,42 @@ void assert_inclusivity(string NAME,uint32_t cpu,uint64_t address){
     }
 
   }
-
-
-
 }
+
+void assert_exclusivity(string NAME,uint64_t address){
+    
+    bool is_LLC=check_string(NAME,"LLC");
+    bool is_L2C=check_string(NAME,"L2C");
+    
+    if(is_LLC){
+
+      for(auto it:caches){
+        if(check_string(it->NAME,"L2C")){
+          uint32_t set=it->get_set(address);
+          uint32_t way=it->get_way(address,set);
+          if(way<it->NUM_WAY and it->block[set*(it->NUM_WAY)+way].valid){
+            cout<<"Address: "<<address<<" Found in LLC  failed!!"<<" "<<NAME<<endl;
+            assert(0);
+          }
+        }
+      }
+
+    }else if(is_L2C){
+      for(auto it:caches){
+        if(check_string(it->NAME,"LLC")){
+          uint32_t set=it->get_set(address);
+          uint32_t way=it->get_way(address,set);
+          if(way<it->NUM_WAY and it->block[set*(it->NUM_WAY)+way].valid){
+            cout<<"Address: "<<address<<" Found in L2C failed!!"<<" "<<NAME<<endl;
+            assert(0);
+          }
+        }
+      }
+    }
+}
+
+
+
 //@Hari to check if adddress is present in MSHR of a cache
 bool inMSHR(CACHE* cache,uint64_t address){
   
@@ -123,34 +156,42 @@ bool inMSHR(CACHE* cache,uint64_t address){
    }
    
    auto it=cache->MSHR.begin();
-   
-   while(it != cache->MSHR.end()){
-    if(it->address==address){
+
+   for(auto it:cache->MSHR){
+    if(it.address==address){
       return 1;
     }
-    it++;
    }
-
+   
    return 0;
 }
 
 //@Hari to check if adddress is present in WQ of a cache
-bool inWQ(CACHE *cache,uint64_t address){
+bool inWQ(string NAME,uint64_t address){
+
+    
+    CACHE *cache;
+
+    for(auto it:caches){
+      if(check_string(it->NAME,NAME)){
+        cache=it;
+        break;
+      }
+    }
+
     if(cache->WQ.size()==0){
       return 0;
     }
 	
-    auto it=cache->WQ.begin();
-
-    while(it != cache->WQ.end()){
-      if(it->address==address){
+    for(auto it:cache->WQ){
+      if(it.address==address){
         return 1;
       }
-      it++;
     }
     
     return 0;
 }
+
 
 //@Hari to check if evcition of a block does not viiolate inclusivity
 int make_inclusive(CACHE *cache,uint64_t address,uint64_t instr_id,CACHE *wq_cache,bool check_dirty){
@@ -270,6 +311,26 @@ int check_inclusive(string NAME,uint64_t victim_address,uint64_t instr_id,uint32
   
 			
 }
+
+bool check_hit(string NAME,uint64_t address){
+    CACHE *ch;
+    CACHE *LLC,*L2C,*L1D;
+        
+    for(auto it:caches){
+      
+      if(check_string(it->NAME,NAME)){
+        ch=it;
+        break;
+      }
+    }
+
+    uint32_t set=ch->get_set(address);
+    uint32_t way=ch->get_way(address,set);
+
+    return (way<ch->NUM_WAY) and (ch->block[set*(ch->NUM_WAY)+way].valid);
+}
+
+
 void CACHE::handle_fill()
 {
   while (writes_available_this_cycle > 0) {
@@ -324,14 +385,111 @@ void CACHE::handle_fill()
 
     }
 
+    //@Hari to make cache exclusive
+    if(MAKE_EXCLUSIVE){
+       
+       //@Hari Bypassing filling of LLC and returning data to L2C
+       if(check_string(NAME,"LLC")){
+          
+          if(fill_mshr->address==CHECK_ADDRESS){
+            cout<<"LLC fill Bypassed for inserting "<<fill_mshr->instr_id<<" "<<__func__<<endl;
+          }
 
-    bool success = filllike_miss(set, way, *fill_mshr);
+          for (auto ret : fill_mshr->to_return){
+            ret->return_data(&(*fill_mshr));
+          }
 
-    
+          MSHR.erase(fill_mshr);
+          writes_available_this_cycle--;
+          return;
+        }
 
 
-    if (!success)
-      return;
+        CACHE *LLC,*L2C,*L1D;
+        
+        for(auto it:caches){
+          
+          if(check_string(it->NAME,"LLC")){
+            LLC=it;
+          }
+
+          if(check_string(it->NAME,"L2C")){
+            L2C=it;
+          }
+
+          if(check_string(it->NAME,"L1D")){
+            L1D=it;
+          }
+
+        }
+
+        if(check_string(NAME,"L2C")){
+
+          PACKET writeback_packet;
+          writeback_packet.fill_level = LLC->fill_level;
+          writeback_packet.cpu = cpu;
+          writeback_packet.address = victim_address;
+          writeback_packet.data=block[set*NUM_WAY+way].data;  
+          writeback_packet.instr_id = fill_mshr->instr_id;
+          writeback_packet.ip = 0;
+          writeback_packet.type = WRITEBACK;
+          writeback_packet.is_dirty=block[set*NUM_WAY+way].dirty;
+
+
+          int result=LLC->add_wq(&writeback_packet);
+
+          if (result == -2){
+            return ;
+          }
+
+          block[set*NUM_WAY+way].dirty=0;
+          block[set*NUM_WAY+way].valid=0;
+
+
+          //@Hari Invalidation the address to be filled is already present in LLC
+          uint32_t LLC_set=LLC->get_set(fill_mshr->address);
+          uint32_t LLC_way=LLC->get_way(fill_mshr->address,LLC_set);
+
+          if(LLC_way<LLC->NUM_WAY){
+            LLC->block[LLC_set*(LLC->NUM_WAY)+LLC_way].valid=0;
+          }
+
+
+        }
+
+        if(check_string(NAME,"L1D") or check_string(NAME,"L1I")){
+      
+          PACKET writeback_packet;
+          writeback_packet.fill_level = lower_level->fill_level;
+          writeback_packet.cpu = cpu;
+          writeback_packet.address = victim_address;
+          writeback_packet.data=block[set*NUM_WAY+way].data;  
+          writeback_packet.instr_id = fill_mshr->instr_id;
+          writeback_packet.ip = 0;
+          writeback_packet.type = WRITEBACK;
+          writeback_packet.is_dirty=block[set*NUM_WAY+way].dirty;
+
+
+          int result=lower_level->add_wq(&writeback_packet);
+
+          if (result == -2){
+            return ;
+          }
+
+          block[set*NUM_WAY+way].dirty=0;
+          block[set*NUM_WAY+way].valid=0;
+        }
+
+
+      }
+
+
+      
+      bool success = filllike_miss(set, way, *fill_mshr);
+
+  
+      if (!success)
+        return;
 
         
     //@Hari check the values
@@ -373,10 +531,21 @@ void CACHE::handle_writeback()
     uint32_t set = get_set(handle_pkt.address);
     uint32_t way = get_way(handle_pkt.address, set);
 
+
+    //@Hari Bypassing the LLC fill if address in L2C
+    if(check_string(NAME,"LLC") and MAKE_EXCLUSIVE){
+      if(check_hit("L2C",handle_pkt.address)){
+        WQ.pop_front();
+        continue;
+      }
+    }
+
+
+
      
     bool is_hit=(way<NUM_WAY);
 
-    if(MAKE_INCLUSIVE){
+    if(MAKE_INCLUSIVE or MAKE_EXCLUSIVE){
       if(is_hit && block[set*NUM_WAY+way].valid==1){
         is_hit=1;
       }else{
@@ -389,8 +558,8 @@ void CACHE::handle_writeback()
     
     if(handle_pkt.address==CHECK_ADDRESS){
       cout<<"Address in WQ of "<<NAME<<" "<<handle_pkt.instr_id<<endl;
-
     }
+
 
 
 
@@ -409,9 +578,15 @@ void CACHE::handle_writeback()
       sim_access[handle_pkt.cpu][handle_pkt.type]++;
 
       // mark dirty
-      fill_block.dirty = 1;
+      //@Hari changed for exclusivr to is_dirty field
 
-      
+
+      if(MAKE_EXCLUSIVE ){
+        fill_block.dirty=handle_pkt.is_dirty;
+      }else{
+        fill_block.dirty = 1;
+      }
+    
     } else // MISS
     {
       bool success;
@@ -420,7 +595,6 @@ void CACHE::handle_writeback()
       } else {
 
         // find victim
-
         
         auto set_begin = std::next(std::begin(block), set * NUM_WAY);
         auto set_end = std::next(set_begin, NUM_WAY);
@@ -453,12 +627,103 @@ void CACHE::handle_writeback()
           return ;
         }
 
+        if(possible==2){
+          block[set*NUM_WAY+way].dirty=0;
+        }
+
+      }
+
+      if(MAKE_EXCLUSIVE){
+
+
+        CACHE *LLC,*L2C,*L1D;
+        
+        for(auto it:caches){
+          
+          if(check_string(it->NAME,"LLC")){
+            LLC=it;
+          }
+
+          if(check_string(it->NAME,"L2C")){
+            L2C=it;
+          }
+
+          if(check_string(it->NAME,"L1D")){
+            L1D=it;
+          }
+
+        }
+
+       //@Hari evicting non dirty packet and putting it in write queue of LLC
+        if(check_string(NAME,"L2C")){
+
+          PACKET writeback_packet;
+          writeback_packet.fill_level = lower_level->fill_level;
+          writeback_packet.cpu = cpu;
+          writeback_packet.address = victim_address;
+          writeback_packet.data=block[set*NUM_WAY+way].data;  
+          writeback_packet.instr_id = handle_pkt.instr_id;
+          writeback_packet.ip = 0;
+          writeback_packet.type = WRITEBACK;
+          writeback_packet.is_dirty=block[set*NUM_WAY+way].dirty;
+
+
+          int result=lower_level->add_wq(&writeback_packet);
+
+          if (result == -2){
+            return ;
+          }
+
+          block[set*NUM_WAY+way].dirty=0;
+          block[set*NUM_WAY+way].valid=0;
+
+
+          //@Hari Invalidation the address to be filled is already present in LLC
+          uint32_t LLC_set=LLC->get_set(handle_pkt.address);
+          uint32_t LLC_way=LLC->get_way(handle_pkt.address,LLC_set);
+
+          if(LLC_way<LLC->NUM_WAY){
+            LLC->block[LLC_set*(LLC->NUM_WAY)+LLC_way].valid=0;
+          }
+
+
+        }
+
+
+
+
+        if(check_string(NAME,"L1D") or check_string(NAME,"L1I")){
+
+
+        
+          PACKET writeback_packet;
+          writeback_packet.fill_level = lower_level->fill_level;
+          writeback_packet.cpu = cpu;
+          writeback_packet.address = victim_address;
+          writeback_packet.data=block[set*NUM_WAY+way].data;  
+          writeback_packet.instr_id = handle_pkt.instr_id;
+          writeback_packet.ip = 0;
+          writeback_packet.type = WRITEBACK;
+          writeback_packet.is_dirty=block[set*NUM_WAY+way].dirty;
+
+
+          int result=lower_level->add_wq(&writeback_packet);
+
+          if (result == -2){
+            return ;
+          }
+
+          block[set*NUM_WAY+way].dirty=0;
+          block[set*NUM_WAY+way].valid=0;
+          
+
+    
+        }
+ 
+
       }
 
 
-      if(possible==2){
-        block[set*NUM_WAY+way].dirty=0;
-      }
 
       success = filllike_miss(set, way, handle_pkt);
 
@@ -509,7 +774,7 @@ void CACHE::handle_read()
     //@Hari checking hit for inclusivity.
     bool is_hit=(way<NUM_WAY);
 
-    if(MAKE_INCLUSIVE){
+    if(MAKE_INCLUSIVE or MAKE_EXCLUSIVE){
         if(way<NUM_WAY && block[set*NUM_WAY+way].valid==1){
             is_hit=1;
         }else{
@@ -528,10 +793,22 @@ void CACHE::handle_read()
         cout<<"Address is present in "<<NAME<<" "<<handle_pkt.instr_id<<" "<<set<<" "<<way<<" "<<__func__<<endl;
       }
 
-
+      //@Hari assertion to check the inclusivity
       if(MAKE_INCLUSIVE and warmup_complete[handle_pkt.cpu]){
         assert_inclusivity(NAME,cpu,handle_pkt.address);
       }
+
+      //@Hari on hit in LLC invalidate it for MAKE_EXCLUSIVE 
+      if(MAKE_EXCLUSIVE and check_string(NAME,"LLC") ){
+        block[set*NUM_WAY+way].valid=0;
+      }
+
+      //@Hari assertion to check the MAKE_EXCLUSIVE
+      if(MAKE_EXCLUSIVE and warmup_complete[handle_pkt.cpu]){
+        assert_exclusivity(NAME,handle_pkt.address);
+      }
+
+
 
       readlike_hit(set, way, handle_pkt);
 
@@ -545,8 +822,20 @@ void CACHE::handle_read()
       }
 
       bool success = readlike_miss(handle_pkt);
+
+
       if (!success)
         return;
+
+
+      //@Hari to align for L2C and LLC stats for EXCLUSIVE Cache hierarchy 
+      if(MAKE_EXCLUSIVE){
+          if(check_string(NAME,"LLC") or check_string(NAME,"L2C")){
+            sim_miss[handle_pkt.cpu][handle_pkt.type]++;
+            sim_access[handle_pkt.cpu][handle_pkt.type]++;
+          }
+      }
+    
 
       if(handle_pkt.address==CHECK_ADDRESS){
         cout<<"Address miss handled in "<<NAME<<" "<<handle_pkt.instr_id<<" "<<__func__<<endl;
@@ -584,6 +873,7 @@ void CACHE::handle_prefetch()
       if (!success)
         return;
     }
+
 
     // remove this entry from PQ
     PQ.pop_front();
@@ -761,6 +1051,11 @@ bool CACHE::filllike_miss(std::size_t set, std::size_t way, PACKET& handle_pkt)
     fill_block.valid = true;
     fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
     fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
+
+    if(handle_pkt.is_dirty==0){
+      fill_block.dirty=0;
+    }
+
     fill_block.address = handle_pkt.address;
     fill_block.v_address = handle_pkt.v_address;
     fill_block.data = handle_pkt.data;
@@ -825,17 +1120,6 @@ uint32_t CACHE::get_way(uint64_t address, uint32_t set)
 {
   auto begin = std::next(block.begin(), set * NUM_WAY);
   auto end = std::next(begin, NUM_WAY);
-
-  /*uint32_t st=set*NUM_WAY;
-  uint32_t en=set*NUM_WAY+NUM_WAY;
-
-  for(uint32_t i=st;i<en;i++){
-    if(block[i].address==address){
-      return i-st;
-    }
-  }
-
-  return NUM_WAY;*/
   return std::distance(begin, std::find_if(begin, end, eq_addr<BLOCK>(address, OFFSET_BITS)));
 }
 
