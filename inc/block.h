@@ -38,6 +38,9 @@ public:
   uint32_t pf_metadata;
   uint32_t cpu = NUM_CPUS;
 
+  //@Hari for diffrentating l2c evictitions in exclusive hierarchy
+  bool is_dirty=1;
+
   uint64_t address = 0, v_address = 0, data = 0, instr_id = 0, ip = 0, event_cycle = std::numeric_limits<uint64_t>::max(), cycle_enqueued = 0;
 
   std::vector<std::vector<LSQ_ENTRY>::iterator> lq_index_depend_on_me = {}, sq_index_depend_on_me = {};

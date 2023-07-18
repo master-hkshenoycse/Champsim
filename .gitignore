@@ -5,6 +5,7 @@ src/core_inst.cc
 gap/
 logs/
 gap_pr/
+PPT/
 
 cache_modified.cc 
 logs_collated_results.csv
@@ -16,6 +17,10 @@ extract_logs.py
 run_me.sh
 run_test.sh
 run_me_pr.sh
+run_me_*
+logs_*
+test/
+testing_*
 
 testing_log_bc0
 testing_log_sssp10
